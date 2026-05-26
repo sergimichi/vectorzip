@@ -13,25 +13,27 @@ pip install vectorzip
 
 ## Quick Start: Drop-in Model Wrapper (Recommended)
 
-VectorZip provides a high-level wrapper, `VectorZipModel`, that acts as a direct, drop-in replacement for standard `SentenceTransformer` models. It automates vector compression and calibration transparently:
+VectorZip provides a high-level wrapper, `VectorZipModel`, that acts as a direct, drop-in replacement for standard `SentenceTransformer` models. The learning curve is zero:
+
+### Before: Standard SentenceTransformers
+```python
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("BAAI/bge-m3")
+embeddings = model.encode(["Hello World"])
+```
+
+### After: VectorZip (4x smaller embeddings)
+Simply swap the import, add the `n_components` target, and VectorZip handles the complex spectral calibration under the hood automatically:
 
 ```python
 from vectorzip import VectorZipModel
 
-# 1. Instantiate the model wrapper (e.g., project 1024-dimensional BGE-M3 down to 384 dimensions)
 model = VectorZipModel("BAAI/bge-m3", n_components=384)
+embeddings = model.encode(["Hello World"])
 
-# 2. Encode sentences directly (automatically calibrates on the first batch and returns 384-dim embeddings)
-compressed_embeddings = model.encode([
-    "El Banco Central Europeo redujo los tipos de interés.",
-    "Un banco de peces tropicales nadaba velozmente."
-])
-
-# 3. Retrieve high-dimensional reconstructed embeddings if needed
-reconstructed_embeddings = model.encode(
-    ["El Banco Central Europeo redujo los tipos de interés."],
-    decompress=True
-)
+# Need the original 1024-dimensional vectors back?
+reconstructed = model.encode(["Hello World"], decompress=True)
 ```
 
 ## Methodology
