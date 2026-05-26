@@ -1,5 +1,8 @@
 # VectorZip: Post-Hoc Spectral Vector Compression for RAG Systems
 
+[![PyPI version](https://badge.fury.io/py/vectorzip.svg)](https://pypi.org/project/vectorzip/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 VectorZip is a Python and Rust library designed to optimize vector database storage and search latency in Retrieval-Augmented Generation (RAG) pipelines. It performs post-hoc spectral dimensionality reduction on high-dimensional vector embeddings using a combined Traveling Salesperson Problem (TSP) dimension reordering and orthonormal Discrete Cosine Transform (DCT-II) projection.
 
 ## Installation
