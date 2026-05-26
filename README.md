@@ -5,7 +5,7 @@
 
 VectorZip is a high-performance Python library designed to optimize vector database storage and query latency in Retrieval-Augmented Generation (RAG) pipelines. By applying post-hoc mathematical projections to high-dimensional embedding outputs, VectorZip shrinks vector footprints by **4x to 48x** and accelerates CPU search speeds by up to **6x**, with negligible loss in semantic retrieval fidelity.
 
----
+--- 
 
 ## Resources
 
