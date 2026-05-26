@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectorzip"
-version = "0.0.4"
+version = "0.0.5"
 description = "High-performance RAG vector compression"
 readme = "README.md"
 authors = [{name = "sergimichi", email = "sergimichi@users.noreply.github.com"}]
