@@ -1,0 +1,10 @@
+{
+    "target_dimension": 64,
+    "pca_id_csr": 0.878248393535614,
+    "pca_ood_csr": 0.49247393012046814,
+    "pca_overfitting_drop": 0.3857744634151459,
+    "vectorzip_id_csr": 0.6313281728287372,
+    "vectorzip_ood_csr": 0.4279900697708656,
+    "vectorzip_overfitting_drop": 0.2033381030578716,
+    "vectorzip_adapted_medical_csr": 0.6644587499976173
+}

@@ -1,0 +1,31 @@
+{
+    "K": 64,
+    "wikipedia_id": {
+        "pca": 0.878248393535614,
+        "vectorzip": 0.6313281728287372,
+        "random_projections": 0.40494904511908614,
+        "product_quantization": 0.9097041408563781,
+        "scalar_quantization": 0.9998013132174696
+    },
+    "medical_ood": {
+        "pca": 0.49247393012046814,
+        "vectorzip": 0.4279900697708656,
+        "random_projections": 0.4082258541910737,
+        "product_quantization": 0.47462809650212384,
+        "scalar_quantization": 0.9997996858226367
+    },
+    "code_ood": {
+        "pca": 0.3923696279525757,
+        "vectorzip": 0.4269189280129477,
+        "random_projections": 0.4170264128700218,
+        "product_quantization": 0.43890647535477134,
+        "scalar_quantization": 0.9998017583464648
+    },
+    "legal_ood": {
+        "pca": 0.5729044079780579,
+        "vectorzip": 0.38324153415491763,
+        "random_projections": 0.40663769879097217,
+        "product_quantization": 0.5196016540682742,
+        "scalar_quantization": 0.9997996612445261
+    }
+}

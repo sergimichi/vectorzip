@@ -1,0 +1,6 @@
+{
+    "n_components": 96,
+    "raw_hit_rate_at_3": 0.98,
+    "pca_hit_rate_at_3": 0.96,
+    "vectorzip_hit_rate_at_3": 0.96
+}

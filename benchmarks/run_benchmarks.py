@@ -32,7 +32,7 @@ def compress_dct(X, K):
     return C_trunc, X_rec
 
 def run_benchmarks():
-    print("=== RUNNING ACADEMIC PERFORMANCE BENCHMARKS ===")
+    print("=== RUNNING PERFORMANCE BENCHMARKS ===")
     
     # Target configurations to test
     configs = [
@@ -145,7 +145,7 @@ def run_benchmarks():
         with open(readme_path, "w", encoding="utf-8") as f:
             f.write(new_content)
             
-        print("\nSuccessfully updated README.md with latest academic benchmarks!")
+        print("\nSuccessfully updated README.md with latest performance benchmarks!")
     else:
         print("\nREADME.md not found in root workspace.")
 

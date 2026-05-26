@@ -1,8 +1,8 @@
 # Architecture & Methodology
 
-VectorZip was designed to bridge the gap between high-capacity contextual models (like BGE-M3 or Qwen2.5) and the strict resource limitations of modern Vector Databases in Retrieval-Augmented Generation (RAG) applications.
+VectorZip is a unified, easy-to-use embedding compression library designed to bridge the gap between high-capacity contextual models (like BGE-M3 or Qwen2.5) and the strict resource limitations of modern Vector Databases in Retrieval-Augmented Generation (RAG) applications.
 
-This document outlines the theoretical foundation and the mathematical pipeline that allows VectorZip to achieve extreme compression ratios without retraining.
+This document outlines the theoretical foundation and the mathematical pipelines of the core algorithms integrated into the VectorZip ecosystem, with a primary focus on our signature proprietary Discrete Cosine Transform (DCT) compression method.
 
 ---
 
@@ -13,23 +13,23 @@ In modern RAG architectures, reducing embedding dimensionality is highly desirab
 However, native low-dimensional models suffer from a fundamental parameter deficiency. A 33-Million parameter model physically cannot store the vocabulary, multilinguality, and structural understanding required for complex enterprise RAG tasks. 
 
 VectorZip operates under the **Same-Family Parametric Transfer Hypothesis**:
-> *By applying spectral compression post-hoc to the outputs of a high-capacity model (e.g., 1024 dimensions), the resulting compressed vector (e.g., 384 dimensions) inherits the advanced linguistic representations of the large backbone, far surpassing the capabilities of a native small model.*
+> *By applying post-hoc compression to the outputs of a high-capacity model (e.g., 1024 dimensions), the resulting compressed vector (e.g., 384 dimensions) inherits the advanced linguistic representations and parametric knowledge of the large backbone, far surpassing the capabilities of a native small model.*
 
 ---
 
-## 2. The Nature of NLP Vectors
+## 2. The Nature of NLP Vectors & The Spectral Challenge
 
 Why can't we just truncate vectors or apply simple PCA?
 
-Unlike audio waveforms or image matrices, **dense NLP embeddings have no inherent spatial or temporal ordering**. The sequence of dimensions $\[d_1, d_2, ..., d_n\]$ in an embedding vector is an arbitrary byproduct of the neural network's internal weight initialization.
+Unlike audio waveforms or image matrices, **dense NLP embeddings have no inherent spatial or temporal ordering**. The sequence of dimensions $[d_1, d_2, ..., d_n]$ in an embedding vector is an arbitrary byproduct of the neural network's internal weight initialization.
 
 Because the dimensions are unordered, the vector exhibits extreme high-frequency "noise" when viewed as a signal. Standard compression algorithms (like Fourier transforms or Discrete Cosine Transforms) fail entirely on high-frequency noise because they are designed to compress *smooth* continuous signals.
 
-VectorZip solves this through a novel two-stage algorithm.
+Our signature **DCT compression method** solves this through a novel two-stage algorithm (TSP reordering + DCT-II projection) developed specifically for VectorZip.
 
 ---
 
-## 3. Stage 1: TSP Dimensional Reordering
+## 3. The DCT Pipeline: Stage 1 - TSP Dimensional Reordering
 
 To enable spectral compression, we must first "smooth" the signal. We achieve this by reordering the dimensions such that highly correlated features are placed adjacently.
 
@@ -44,7 +44,7 @@ The result is a static permutation that groups related neural features together.
 
 ---
 
-## 4. Stage 2: Orthonormal Spectral Projection (DCT-II)
+## 4. The DCT Pipeline: Stage 2 - Orthonormal Spectral Projection (DCT-II)
 
 Once the vector is transformed into a "smooth" pseudo-signal by the TSP permutation, it becomes highly compressible.
 
@@ -64,4 +64,4 @@ Because the DCT-II is an orthonormal transformation, it preserves dot products a
 
 ## Conclusion
 
-VectorZip does not "learn" new representations; it mathematically extracts the maximum density of information from existing ones. This post-hoc pipeline allows developers to enjoy the search latency of a 384-dimensional database while retaining the elite intelligence of a 1024-dimensional model.
+VectorZip does not "learn" new representations; it provides a unified, highly optimized library to compress and decompress embeddings easily. While VectorZip includes classic methods like PCA, Product Quantization, and Matryoshka slicing, our custom-built **TSP-smoothed DCT algorithm** stands out by mathematically extracting the maximum density of information from existing embeddings, providing developers with high-fidelity, out-of-distribution robust vector compression.

@@ -1,0 +1,9 @@
+{
+    "original_dimension": 384,
+    "target_dimension": 128,
+    "msd_raw_original_order": 0.00514423381537199,
+    "msd_raw_tsp_order": 0.003327289130538702,
+    "msd_pca_reconstructed": 0.0046946085058152676,
+    "msd_vectorzip_reconstructed_original_order": 0.0029110613108550582,
+    "msd_vectorzip_reconstructed_tsp_order": 0.0003063401546955045
+}

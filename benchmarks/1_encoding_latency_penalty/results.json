@@ -1,0 +1,14 @@
+{
+    "batch_size": 1000,
+    "original_dimension": 1024,
+    "target_dimension": 384,
+    "pca_transform_avg_sec": 0.002119750999554526,
+    "vectorzip_transform_avg_sec": 0.008139608999772462,
+    "pca_throughput_vectors_per_sec": 471753.5220929977,
+    "vectorzip_throughput_vectors_per_sec": 122856.0241687229,
+    "vectorzip_speedup_factor": 0.2604241800329454,
+    "mini_lm_sentences_count": 500,
+    "mini_lm_raw_encoding_sec": 0.12451774600049248,
+    "mini_lm_vectorzip_encoding_sec": 0.1316474070008553,
+    "encoding_overhead_sec": 0.00712966100036283
+}

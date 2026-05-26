@@ -19,3 +19,6 @@ scratch/
 .antigravitycli/
 .gemini/
 *.npy
+
+# Compiled documentation site
+site/

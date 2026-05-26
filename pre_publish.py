@@ -39,7 +39,7 @@ def main():
     
     # 3. Run Performance Latency Benchmarks & Update README.md
     run_step(
-        f"{venv_python} benchmarks/run_academic_benchmarks.py", 
+        f"{venv_python} benchmarks/run_benchmarks.py", 
         "Running performance and physical latency benchmarks"
     )
     

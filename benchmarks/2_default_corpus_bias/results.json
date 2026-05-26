@@ -1,0 +1,17 @@
+{
+    "original_dimension": 1024,
+    "target_dimension": 384,
+    "math_pca_bytes_float32": 1576960,
+    "math_pca_bytes_float64": 3153920,
+    "math_vectorzip_bytes_int16": 2048,
+    "math_vectorzip_bytes_int32": 4096,
+    "math_vectorzip_bytes_int64": 8192,
+    "empirical_pca_pickle_bytes": 1582316,
+    "empirical_pca_pickle_kb": 1545.23046875,
+    "empirical_vectorzip_json_bytes": 5034,
+    "empirical_vectorzip_json_kb": 4.916015625,
+    "empirical_vectorzip_pickle_bytes": 8344,
+    "empirical_vectorzip_pickle_kb": 8.1484375,
+    "memory_saving_ratio_pickle": 189.6351869606903,
+    "memory_saving_ratio_json": 314.3257846642829
+}

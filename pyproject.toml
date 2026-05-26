@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectorzip"
-version = "0.0.5"
+version = "0.1.0"
 description = "High-performance RAG vector compression"
 readme = "README.md"
 authors = [{name = "sergimichi", email = "sergimichi@users.noreply.github.com"}]
@@ -16,6 +16,7 @@ requires-python = ">=3.8"
 
 [project.urls]
 Homepage = "https://github.com/sergimichi/vectorzip"
+Documentation = "https://sergimichi.github.io/vectorzip/"
 Repository = "https://github.com/sergimichi/vectorzip.git"
 "Bug Tracker" = "https://github.com/sergimichi/vectorzip/issues"
 
