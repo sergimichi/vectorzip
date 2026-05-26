@@ -1,0 +1,49 @@
+site_name: VectorZip
+site_description: High-performance spectral compression for dense vector embeddings
+site_url: https://sergimichi.github.io/vectorzip
+repo_url: https://github.com/sergimichi/vectorzip
+repo_name: sergimichi/vectorzip
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_root_heading: true
+            show_source: true
+
+nav:
+  - 🚀 Quickstart: index.md
+  - 🧠 How It Works: how-it-works.md
+  - 📊 Benchmarks: benchmarks.md
+  - ⚙️ API Reference: api.md
