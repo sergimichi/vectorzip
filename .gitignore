@@ -1,0 +1,21 @@
+# Python envs and builds
+venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+
+# IDE and OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local data and experiments
+archive/
+plan/
+scratch/
+.antigravitycli/
+.gemini/
+*.npy

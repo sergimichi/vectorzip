@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vectorzip"
+version = "0.0.4"
+description = "High-performance RAG vector compression"
+readme = "README.md"
+authors = [{name = "sergimichi", email = "sergimichi@users.noreply.github.com"}]
+dependencies = [
+    "numpy",
+    "scipy"
+]
+requires-python = ">=3.8"
+
+[tool.setuptools]
+packages = ["vectorzip"]
