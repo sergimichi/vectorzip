@@ -353,8 +353,8 @@ def main():
             with open(generic_cache, 'wb') as f: pickle.dump(generic_emb, f)
             print(f"  Encoded in {time.time()-t0:.1f}s")
 
-        # Pre-fit compressors
-        print(f"  Pre-fitting compressors...")
+        # Pre-fit compressors (parallel with multiprocessing)
+        print(f"  Pre-fitting compressors (parallel)...")
         comp_cache = CompressorCache()
         t0 = time.time()
         k_values = []
@@ -362,11 +362,40 @@ def main():
             num, denom = r.split('/')
             K = max(int(D * int(num) / int(denom)), 16)
             if K < D: k_values.append((r, K))
+        
+        # Build list of all (method, K, seed) combos to fit
+        fit_tasks = []
         for method in METHODS:
             for _, K in k_values:
                 for seed in SEEDS:
-                    comp_cache.get(method, generic_emb, K, seed=seed)
-        print(f"  {len(comp_cache.cache)} compressors fitted in {time.time()-t0:.1f}s")
+                    fit_tasks.append((method, K, seed))
+        
+        # Fit in parallel using multiprocessing
+        from multiprocessing import Pool
+        def _fit_one(args):
+            method, K, seed = args
+            if method == 'pca':
+                c = PCA(n_components=K, random_state=seed); c.fit(generic_emb)
+            elif method == 'dct':
+                c = VectorZip(n_components=K, method='dct'); c.fit(generic_emb)
+            elif method == 'rp':
+                c = RandomProjectionCompressor(n_components=K, seed=seed); c.fit(generic_emb)
+            elif method == 'dct+sq8':
+                c = VectorZip(n_components=K, method='dct+sq8'); c.fit(generic_emb)
+            elif method == 'pca+sq8':
+                c = VectorZip(n_components=K, method='pca+sq8'); c.fit(generic_emb)
+            elif method == 'truncation':
+                c = None
+            else:
+                c = None
+            return (f"{method}_K{K}_s{seed}_generic", c)
+        
+        n_workers = min(len(fit_tasks), os.cpu_count() or 4)
+        with Pool(n_workers) as pool:
+            results = pool.map(_fit_one, fit_tasks)
+        for key, comp in results:
+            comp_cache.cache[key] = comp
+        print(f"  {len(comp_cache.cache)} compressors fitted in {time.time()-t0:.1f}s ({n_workers} workers)")
 
         # Run each dataset
         for ds_idx, ds_name in enumerate(BEIR_DATASETS):
