@@ -210,6 +210,11 @@ class CompressorCache:
 _global_generic_emb = None
 
 def _fit_one(args):
+    # Limit BLAS/scipy threads inside each worker to avoid resource conflicts
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['NUMEXPR_NUM_THREADS'] = '1'
     method, K, seed = args
     if method == 'pca':
         c = PCA(n_components=K, random_state=seed); c.fit(_global_generic_emb)
