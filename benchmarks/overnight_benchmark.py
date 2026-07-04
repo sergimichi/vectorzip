@@ -45,8 +45,8 @@ MIRACL_LANGS = ['es', 'fr', 'de', 'ar', 'ja', 'zh']
 METHODS = ['dct', 'pca', 'rp', 'truncation', 'dct+sq8', 'pca+sq8']
 RATIOS = ['1/2', '1/4', '1/8', '1/16', '1/32']
 SEEDS = [42, 43, 44, 45, 46]
-MAX_DOCS = 2000
-MAX_QUERIES = 200
+MAX_DOCS = 0  # 0 = full dataset
+MAX_QUERIES = 0  # 0 = all queries
 CALIB_SIZES = [50, 100, 200, 500, 1000]
 DEVICE = 'cuda'
 CACHE_DIR = './beir_cache'
@@ -60,32 +60,63 @@ os.makedirs(os.path.dirname(OUTPUT_FILE) or '.', exist_ok=True)
 # 32GB VRAM can hold 2000 docs + 200 queries + compressed variants
 # ============================================================
 def evaluate(docs_emb, queries_emb, doc_ids, qids, qrels, top_k=100, device='cuda'):
-    """Evaluate retrieval — all queries in a single GPU matmul."""
+    """Evaluate retrieval — chunked GPU matmul to avoid OOM on large datasets."""
     import torch
 
     try:
         if device == 'cuda' and torch.cuda.is_available():
             with torch.inference_mode():
-                # Move everything to GPU at once
+                n_docs = docs_emb.shape[0]
+                n_queries = queries_emb.shape[0]
+                # Estimate memory: (n_queries * n_docs * 4 bytes) for similarity matrix
+                # 32GB GPU: safe up to ~500M elements = ~2GB per chunk
+                max_elements = 200_000_000  # 200M floats = ~800MB
+                chunk_size = max(1, max_elements // max(n_queries, 1))
+                
+                # Normalize on GPU (small, fits always)
                 docs_t = torch.from_numpy(docs_emb.astype(np.float32)).to(device, non_blocking=True)
-                queries_t = torch.from_numpy(queries_emb.astype(np.float32)).to(device, non_blocking=True)
-
-                # Normalize
                 docs_norm = docs_t / (torch.norm(docs_t, dim=1, keepdim=True) + 1e-8)
+                
+                queries_t = torch.from_numpy(queries_emb.astype(np.float32)).to(device, non_blocking=True)
                 queries_norm = queries_t / (torch.norm(queries_t, dim=1, keepdim=True) + 1e-8)
-
-                # ALL queries at once: (n_queries, n_docs) similarity matrix
-                sims = queries_norm @ docs_norm.T  # (Q, D) — fits easily in 32GB
-
-                # Get top-k for all queries at once
-                topk_scores, topk_indices = torch.topk(sims, k=min(top_k, sims.shape[1]), dim=1)
-                topk_indices = topk_indices.cpu().numpy()
-
-                # Compute metrics on CPU (fast, just ranking)
+                
+                # Collect top-k indices in chunks
+                all_topk_indices = np.zeros((n_queries, min(top_k, n_docs)), dtype=np.int64)
+                
+                for start in range(0, n_docs, chunk_size):
+                    end = min(start + chunk_size, n_docs)
+                    docs_chunk = docs_norm[start:end]  # (chunk, D)
+                    sims_chunk = queries_norm @ docs_chunk.T  # (Q, chunk)
+                    
+                    # For first chunk, just store top-k. For subsequent, merge.
+                    if start == 0:
+                        topk_scores, topk_indices = torch.topk(sims_chunk, k=min(top_k, end), dim=1)
+                        all_topk_indices[:, :topk_indices.shape[1]] = topk_indices.cpu().numpy()
+                        best_scores = topk_scores
+                    else:
+                        # Merge: concatenate with existing and re-select top-k
+                        chunk_topk_scores, chunk_topk_indices = torch.topk(sims_chunk, k=min(top_k, end-start), dim=1)
+                        # Combine
+                        combined_scores = torch.cat([best_scores, chunk_topk_scores], dim=1)
+                        combined_indices = torch.cat([
+                            torch.from_numpy(all_topk_indices).to(device),
+                            chunk_topk_indices + start
+                        ], dim=1)
+                        new_topk_scores, new_topk_indices = torch.topk(combined_scores, k=min(top_k, combined_scores.shape[1]), dim=1)
+                        all_topk_indices = new_topk_indices.cpu().numpy()
+                        best_scores = new_topk_scores
+                    
+                    del sims_chunk
+                    torch.cuda.empty_cache()
+                
+                del docs_t, queries_t, docs_norm, queries_norm, best_scores
+                torch.cuda.empty_cache()
+                
+                # Compute metrics on CPU
                 all_ndcg10, all_r5, all_r10, all_r100, all_map10 = [], [], [], [], []
 
                 for i, qid in enumerate(qids):
-                    ranked = topk_indices[i]
+                    ranked = all_topk_indices[i]
                     rel = qrels.get(qid, {})
                     if not rel: continue
                     rel_set = set(d for d, r in rel.items() if r > 0)
@@ -348,7 +379,7 @@ def main():
             print(f"\n  [{ds_idx+1}/{len(BEIR_DATASETS)}] {ds_name} | Elapsed: {elapsed:.0f}s ({elapsed/60:.1f}min)")
 
             # Load/cache embeddings
-            cache_file = os.path.join(CACHE_DIR, f"{model_key}_{ds_name}_d{MAX_DOCS}_q{MAX_QUERIES}.pkl")
+            cache_file = os.path.join(CACHE_DIR, f"{model_key}_{ds_name}_full.pkl" if MAX_DOCS == 0 else f"{model_key}_{ds_name}_d{MAX_DOCS}_q{MAX_QUERIES}.pkl")
             if os.path.exists(cache_file):
                 print(f"    Loading from cache...")
                 with open(cache_file, 'rb') as f: cached = pickle.load(f)
@@ -366,21 +397,40 @@ def main():
                 relevant = set()
                 for qid in valid_qids: relevant.update(qrels_raw[qid].keys())
                 all_doc_ids = list(corpus.keys())
-                rel_in_corpus = [d for d in all_doc_ids if d in relevant]
-                other = [d for d in all_doc_ids if d not in relevant]
-                np.random.seed(42)
-                n_fill = max(0, MAX_DOCS - len(rel_in_corpus))
-                sampled = list(np.random.choice(other, min(n_fill, len(other)), replace=False)) if other else []
-                doc_ids = rel_in_corpus + sampled
-                # Hard cap: never exceed MAX_DOCS
-                if len(doc_ids) > MAX_DOCS:
-                    doc_ids = doc_ids[:MAX_DOCS]
-                qids = list(np.random.choice(valid_qids, min(MAX_QUERIES, len(valid_qids)), replace=False))
+                
+                if MAX_DOCS > 0 and len(all_doc_ids) > MAX_DOCS:
+                    # Sample: keep all relevant + fill with random
+                    rel_in_corpus = [d for d in all_doc_ids if d in relevant]
+                    other = [d for d in all_doc_ids if d not in relevant]
+                    np.random.seed(42)
+                    n_fill = max(0, MAX_DOCS - len(rel_in_corpus))
+                    sampled = list(np.random.choice(other, min(n_fill, len(other)), replace=False)) if other else []
+                    doc_ids = rel_in_corpus + sampled
+                    if len(doc_ids) > MAX_DOCS:
+                        doc_ids = doc_ids[:MAX_DOCS]
+                else:
+                    # Full dataset
+                    doc_ids = all_doc_ids
+                
+                if MAX_QUERIES > 0 and len(valid_qids) > MAX_QUERIES:
+                    np.random.seed(42)
+                    qids = list(np.random.choice(valid_qids, min(MAX_QUERIES, len(valid_qids)), replace=False))
+                else:
+                    qids = valid_qids
+                
                 doc_set = set(doc_ids)
                 qrels = {qid: {d: int(round(r)) for d, r in qrels_raw[qid].items() if d in doc_set} for qid in qids}
-                # Reduce batch size for large corpora to avoid OOM
-                effective_batch = min(batch_size, 32) if len(doc_ids) > 5000 else batch_size
-                print(f"    Encoding {len(doc_ids)} docs + {len(qids)} queries (batch={effective_batch})...")
+                # Adaptive batch size: large datasets or long texts need smaller batches
+                n_docs = len(doc_ids)
+                if n_docs > 100000:
+                    effective_batch = 16
+                elif n_docs > 50000:
+                    effective_batch = 24
+                elif n_docs > 10000:
+                    effective_batch = 32
+                else:
+                    effective_batch = batch_size
+                print(f"    Encoding {n_docs} docs + {len(qids)} queries (batch={effective_batch})...")
                 t0 = time.time()
                 doc_texts = [corpus[d]['text'] for d in doc_ids]
                 query_texts = [queries[q] for q in qids]
