@@ -142,22 +142,6 @@ def evaluate(docs_emb, queries_emb, doc_ids, qids, qrels, top_k=100, device='cud
                 }
         except Exception as e:
             print(f"  GPU eval failed ({e}), falling back to CPU")
-                            hits += 1; ap += hits / (j + 1)
-                    all_map10.append(ap / min(len(rel_set), 10) if rel_set else 0.0)
-
-                # Free GPU memory
-                del docs_t, queries_t, docs_norm, queries_norm, sims, topk_scores, topk_indices
-                torch.cuda.empty_cache()
-
-                return {
-                    'ndcg@10': float(np.mean(all_ndcg10)) if all_ndcg10 else 0.0,
-                    'recall@5': float(np.mean(all_r5)) if all_r5 else 0.0,
-                    'recall@10': float(np.mean(all_r10)) if all_r10 else 0.0,
-                    'recall@100': float(np.mean(all_r100)) if all_r100 else 0.0,
-                    'map@10': float(np.mean(all_map10)) if all_map10 else 0.0,
-                }
-    except Exception as e:
-        print(f"  GPU eval failed ({e}), falling back to CPU")
 
     # CPU fallback
     docs_norm = docs_emb / (np.linalg.norm(docs_emb, axis=1, keepdims=True) + 1e-8)
