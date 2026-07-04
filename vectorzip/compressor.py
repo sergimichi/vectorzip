@@ -149,13 +149,15 @@ class VectorZip:
         - fit_transform(X)
         - inverse_transform(C)
     """
-    def __init__(self, n_components=384, method="dct", tsp_optimize=True, pq_subvectors=8, pq_clusters=256, rp_seed=42):
+    def __init__(self, n_components=384, method="dct", tsp_optimize=True, pq_subvectors=8, pq_clusters=256, rp_seed=42, dct_taper="smooth", dct_coeff_select="auto"):
         self.n_components = n_components
         self.method = method.lower()
         self.tsp_optimize = tsp_optimize
         self.pq_subvectors = pq_subvectors
         self.pq_clusters = pq_clusters
         self.rp_seed = rp_seed
+        self.dct_taper = dct_taper
+        self.dct_coeff_select = dct_coeff_select
         
         parts = self.method.split("+")
         self.reduction_method = parts[0]
@@ -173,6 +175,10 @@ class VectorZip:
         self.pq_ = None
         self.sq_ = None
         self.original_dim_ = None
+        self.dct_mean_ = None
+        self.dct_std_ = None
+        self.dct_coeff_order_ = None
+        self.dct_taper_weights_ = None
 
     def fit(self, X):
         """
@@ -198,10 +204,29 @@ class VectorZip:
         if self.reduction_method == "dct":
             if self.n_components > N:
                 raise ValueError(f"Target n_components ({self.n_components}) cannot exceed dimension {N}.")
+            # Per-dimension standardization for TSP ordering only (scale-invariant correlation)
+            self.dct_mean_ = np.mean(X, axis=0)
+            self.dct_std_ = np.std(X, axis=0)
+            self.dct_std_ = np.where(self.dct_std_ < 1e-10, 1.0, self.dct_std_)
+            X_norm = (X - self.dct_mean_) / self.dct_std_
             if self.tsp_optimize:
-                self.tsp_indices_ = self._solve_tsp(X)
+                self.tsp_indices_ = self._solve_tsp(X_norm)
             else:
                 self.tsp_indices_ = np.arange(N)
+            # DCT is applied on original (un-normalized) data to preserve energy compaction
+            # Standardization would equalize variance across dims, destroying compaction
+            self.dct_coeff_order_ = np.arange(self.n_components)
+            # Build tapering window for smooth truncation
+            if self.dct_taper == "smooth" and self.n_components < N:
+                K = self.n_components
+                taper = np.ones(N)
+                taper_start = max(K - 8, 0)
+                for idx in range(taper_start, min(K + 8, N)):
+                    taper[idx] = 0.5 * (1 + np.cos(np.pi * (idx - taper_start) / max(K - taper_start, 1)))
+                taper[K:] = 0.0
+                self.dct_taper_weights_ = taper
+            else:
+                self.dct_taper_weights_ = None
         elif self.reduction_method == "pca":
             if self.n_components > N:
                 raise ValueError(f"Target n_components ({self.n_components}) cannot exceed dimension {N}.")
@@ -238,7 +263,7 @@ class VectorZip:
         if self.reduction_method == "dct":
             X_perm = X[:, self.tsp_indices_]
             C_full = dct(X_perm, type=2, axis=1, norm='ortho')
-            return C_full[:, :self.n_components]
+            return C_full[:, self.dct_coeff_order_]
         elif self.reduction_method == "pca":
             return self.pca_.transform(X)
         elif self.reduction_method == "rp":
@@ -313,7 +338,9 @@ class VectorZip:
             M, K = C_float.shape
             N = len(self.tsp_indices_)
             C_padded = np.zeros((M, N))
-            C_padded[:, :K] = C_float
+            C_padded[:, self.dct_coeff_order_] = C_float
+            if self.dct_taper_weights_ is not None:
+                C_padded = C_padded * self.dct_taper_weights_
             X_rec_perm = idct(C_padded, type=2, axis=1, norm='ortho')
             inv_tsp_indices = np.argsort(self.tsp_indices_)
             X_rec = X_rec_perm[:, inv_tsp_indices]
@@ -335,55 +362,116 @@ class VectorZip:
         M, N = X.shape
         if N <= 1:
             return np.arange(N)
-            
-        mean_sq = np.mean(X ** 2, axis=0)
-        dot_product = np.dot(X.T, X) / M
-        dist_matrix = mean_sq[:, np.newaxis] + mean_sq[np.newaxis, :] - 2 * dot_product
-        dist_matrix = np.clip(dist_matrix, 0, None)
-        
-        unvisited = set(range(N))
+
+        # Correlation-based distance: D_{i,j} = 1 - |corr(i,j)|
+        # Scale-invariant: groups truly correlated dimensions regardless of variance
+        X_centered = X - np.mean(X, axis=0)
+        norms = np.linalg.norm(X_centered, axis=0)
+        norms = np.where(norms < 1e-10, 1.0, norms)
+        X_normalized = X_centered / norms
+        corr_matrix = np.dot(X_normalized.T, X_normalized) / M
+        dist_matrix = 1.0 - np.abs(corr_matrix)
+        np.fill_diagonal(dist_matrix, 0.0)
+
+        # Nearest-neighbor heuristic (vectorized)
+        unvisited = np.ones(N, dtype=bool)
         current = 0
         path = [current]
-        unvisited.remove(current)
-        while unvisited:
-            nearest = min(unvisited, key=lambda node: dist_matrix[current, node])
+        unvisited[current] = False
+        while np.any(unvisited):
+            dists = np.where(unvisited, dist_matrix[current], np.inf)
+            nearest = np.argmin(dists)
             path.append(nearest)
-            unvisited.remove(nearest)
+            unvisited[nearest] = False
             current = nearest
-            
+
         path = self._two_opt(path, dist_matrix)
+        path = self._or_opt(path, dist_matrix)
         return np.array(path)
 
     def _two_opt(self, path, dist_matrix):
         n = len(path)
-        best_path = path[:]
+        best_path = np.array(path)
         improved = True
-        max_iters = 100
+        max_iters = 50
         iters = 0
         while improved and iters < max_iters:
             improved = False
             for i in range(1, n - 2):
-                for j in range(i + 1, n + 1):
-                    if j - i == 1:
-                        continue
-                    
-                    node_i_prev = best_path[i - 1]
-                    node_i = best_path[i]
-                    node_j_prev = best_path[j - 1]
-                    
-                    if j < n:
-                        node_j = best_path[j]
-                        current_edges_cost = dist_matrix[node_i_prev, node_i] + dist_matrix[node_j_prev, node_j]
-                        new_edges_cost = dist_matrix[node_i_prev, node_j_prev] + dist_matrix[node_i, node_j]
-                    else:
-                        current_edges_cost = dist_matrix[node_i_prev, node_i]
-                        new_edges_cost = dist_matrix[node_i_prev, node_j_prev]
-                    
-                    if new_edges_cost < current_edges_cost:
-                        best_path[i:j] = best_path[i:j][::-1]
-                        improved = True
+                node_i_prev = best_path[i - 1]
+                node_i = best_path[i]
+                # Vectorized over all j > i+1
+                js = np.arange(i + 2, n)
+                node_j_prev = best_path[js - 1]
+                node_j = best_path[np.minimum(js, n - 1)]
+                current_costs = dist_matrix[node_i_prev, node_i] + dist_matrix[node_j_prev, node_j]
+                new_costs = dist_matrix[node_i_prev, node_j_prev] + dist_matrix[node_i, node_j]
+                gains = current_costs - new_costs
+                best_j = np.argmax(gains)
+                if gains[best_j] > 1e-12:
+                    j = js[best_j]
+                    best_path[i:j] = best_path[i:j][::-1]
+                    improved = True
             iters += 1
-        return best_path
+        return best_path.tolist()
+
+    def _or_opt(self, path, dist_matrix):
+        """Or-opt: relocate segments of length 1-3 to better positions."""
+        n = len(path)
+        best_path = np.array(path)
+        improved = True
+        max_iters = 20
+        iters = 0
+        while improved and iters < max_iters:
+            improved = False
+            for seg_len in [1, 2, 3]:
+                for i in range(n - seg_len + 1):
+                    segment = best_path[i:i + seg_len]
+                    rest = np.concatenate([best_path[:i], best_path[i + seg_len:]])
+                    # Cost of removing segment from position i
+                    if i > 0 and i < n - seg_len:
+                        remove_gain = dist_matrix[best_path[i - 1], best_path[i]] + dist_matrix[best_path[i + seg_len - 1], best_path[i + seg_len]] - dist_matrix[best_path[i - 1], best_path[i + seg_len]]
+                    elif i == 0 and n - seg_len > 0:
+                        remove_gain = dist_matrix[best_path[seg_len - 1], best_path[seg_len]]
+                    elif i == n - seg_len and n - seg_len > 0:
+                        remove_gain = dist_matrix[best_path[i - 1], best_path[i]]
+                    else:
+                        continue
+
+                    # Try inserting segment at each position in rest
+                    best_insert_gain = 0.0
+                    best_insert_pos = -1
+                    for j in range(len(rest)):
+                        if j == 0:
+                            insert_cost = dist_matrix[segment[-1], rest[0]] if len(rest) > 1 else 0
+                            base_cost = 0
+                        elif j == len(rest):
+                            insert_cost = dist_matrix[rest[-1], segment[0]] if len(rest) > 0 else 0
+                            base_cost = 0
+                        else:
+                            insert_cost = dist_matrix[rest[j - 1], segment[0]] + dist_matrix[segment[-1], rest[j]] - dist_matrix[rest[j - 1], rest[j]]
+                            base_cost = dist_matrix[rest[j - 1], rest[j]]
+
+                        gain = remove_gain - insert_cost
+                        if gain > best_insert_gain + 1e-12:
+                            best_insert_gain = gain
+                            best_insert_pos = j
+
+                    if best_insert_pos >= 0:
+                        new_path = np.concatenate([
+                            rest[:best_insert_pos],
+                            segment,
+                            rest[best_insert_pos:]
+                        ])
+                        best_path = new_path
+                        improved = True
+                        break
+                    if improved:
+                        break
+                if improved:
+                    break
+            iters += 1
+        return best_path.tolist()
 
     def _path_cost(self, path, dist_matrix):
         return sum(dist_matrix[path[i], path[i+1]] for i in range(len(path) - 1))
@@ -492,6 +580,8 @@ class VectorZipModel:
             config["pq_subvectors"] = self.compressor.pq_subvectors
             config["pq_clusters"] = self.compressor.pq_clusters
             config["rp_seed"] = self.compressor.rp_seed
+            config["dct_taper"] = self.compressor.dct_taper
+            config["dct_coeff_select"] = self.compressor.dct_coeff_select
             
             if self.compressor.original_dim_ is not None:
                 config["original_dim_"] = self.compressor.original_dim_
@@ -499,6 +589,13 @@ class VectorZipModel:
             # Serialize DCT
             if self.compressor.tsp_indices_ is not None:
                 config["tsp_indices_"] = self.compressor.tsp_indices_.tolist()
+            if self.compressor.dct_mean_ is not None:
+                config["dct_mean_"] = self.compressor.dct_mean_.tolist()
+                config["dct_std_"] = self.compressor.dct_std_.tolist()
+            if self.compressor.dct_coeff_order_ is not None:
+                config["dct_coeff_order_"] = self.compressor.dct_coeff_order_.tolist()
+            if self.compressor.dct_taper_weights_ is not None:
+                config["dct_taper_weights_"] = self.compressor.dct_taper_weights_.tolist()
                 
             # Serialize PCA
             if self.compressor.pca_ is not None:
@@ -541,7 +638,9 @@ class VectorZipModel:
                 tsp_optimize=config.get("tsp_optimize", True),
                 pq_subvectors=config.get("pq_subvectors", 8),
                 pq_clusters=config.get("pq_clusters", 256),
-                rp_seed=config.get("rp_seed", 42)
+                rp_seed=config.get("rp_seed", 42),
+                dct_taper=config.get("dct_taper", "smooth"),
+                dct_coeff_select=config.get("dct_coeff_select", "auto")
             )
             
             # Restore state based on config fields
@@ -550,6 +649,13 @@ class VectorZipModel:
                 
             if "tsp_indices_" in config:
                 model.compressor.tsp_indices_ = np.array(config["tsp_indices_"])
+            if "dct_mean_" in config:
+                model.compressor.dct_mean_ = np.array(config["dct_mean_"])
+                model.compressor.dct_std_ = np.array(config["dct_std_"])
+            if "dct_coeff_order_" in config:
+                model.compressor.dct_coeff_order_ = np.array(config["dct_coeff_order_"])
+            if "dct_taper_weights_" in config:
+                model.compressor.dct_taper_weights_ = np.array(config["dct_taper_weights_"])
                 
             if "pca_components_" in config:
                 from sklearn.decomposition import PCA
