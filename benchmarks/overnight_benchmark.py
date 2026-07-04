@@ -372,15 +372,20 @@ def main():
                 n_fill = max(0, MAX_DOCS - len(rel_in_corpus))
                 sampled = list(np.random.choice(other, min(n_fill, len(other)), replace=False)) if other else []
                 doc_ids = rel_in_corpus + sampled
+                # Hard cap: never exceed MAX_DOCS
+                if len(doc_ids) > MAX_DOCS:
+                    doc_ids = doc_ids[:MAX_DOCS]
                 qids = list(np.random.choice(valid_qids, min(MAX_QUERIES, len(valid_qids)), replace=False))
                 doc_set = set(doc_ids)
                 qrels = {qid: {d: int(round(r)) for d, r in qrels_raw[qid].items() if d in doc_set} for qid in qids}
-                print(f"    Encoding {len(doc_ids)} docs + {len(qids)} queries (batch={batch_size})...")
+                # Reduce batch size for large corpora to avoid OOM
+                effective_batch = min(batch_size, 32) if len(doc_ids) > 5000 else batch_size
+                print(f"    Encoding {len(doc_ids)} docs + {len(qids)} queries (batch={effective_batch})...")
                 t0 = time.time()
                 doc_texts = [corpus[d]['text'] for d in doc_ids]
                 query_texts = [queries[q] for q in qids]
-                docs_emb = model.encode(doc_texts, batch_size=batch_size, show_progress_bar=True, convert_to_numpy=True)
-                queries_emb = model.encode(query_texts, batch_size=batch_size, show_progress_bar=False, convert_to_numpy=True)
+                docs_emb = model.encode(doc_texts, batch_size=effective_batch, show_progress_bar=True, convert_to_numpy=True)
+                queries_emb = model.encode(query_texts, batch_size=effective_batch, show_progress_bar=False, convert_to_numpy=True)
                 print(f"    Encoded in {time.time()-t0:.1f}s")
                 with open(cache_file, 'wb') as f:
                     pickle.dump({'doc_ids': doc_ids, 'qids': qids, 'docs_emb': docs_emb, 'queries_emb': queries_emb, 'qrels': qrels}, f)
