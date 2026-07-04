@@ -60,85 +60,88 @@ os.makedirs(os.path.dirname(OUTPUT_FILE) or '.', exist_ok=True)
 # 32GB VRAM can hold 2000 docs + 200 queries + compressed variants
 # ============================================================
 def evaluate(docs_emb, queries_emb, doc_ids, qids, qrels, top_k=100, device='cuda'):
-    """Evaluate retrieval — chunked GPU matmul to avoid OOM on large datasets."""
+    """Evaluate retrieval — GPU matmul with chunking for large datasets."""
     import torch
 
-    try:
-        if device == 'cuda' and torch.cuda.is_available():
+    if device == 'cuda' and torch.cuda.is_available():
+        try:
             with torch.inference_mode():
                 n_docs = docs_emb.shape[0]
                 n_queries = queries_emb.shape[0]
-                # Estimate memory: (n_queries * n_docs * 4 bytes) for similarity matrix
-                # 32GB GPU: safe up to ~500M elements = ~2GB per chunk
-                max_elements = 200_000_000  # 200M floats = ~800MB
-                chunk_size = max(1, max_elements // max(n_queries, 1))
+                k = min(top_k, n_docs)
                 
-                # Normalize on GPU (small, fits always)
-                docs_t = torch.from_numpy(docs_emb.astype(np.float32)).to(device, non_blocking=True)
+                # Move to GPU
+                docs_t = torch.from_numpy(docs_emb.astype(np.float32)).to(device)
+                queries_t = torch.from_numpy(queries_emb.astype(np.float32)).to(device)
+                
+                # Normalize
                 docs_norm = docs_t / (torch.norm(docs_t, dim=1, keepdim=True) + 1e-8)
-                
-                queries_t = torch.from_numpy(queries_emb.astype(np.float32)).to(device, non_blocking=True)
                 queries_norm = queries_t / (torch.norm(queries_t, dim=1, keepdim=True) + 1e-8)
                 
-                # Collect top-k indices in chunks
-                all_topk_indices = np.zeros((n_queries, min(top_k, n_docs)), dtype=np.int64)
+                # Compute similarity in chunks of docs to avoid OOM
+                # Each chunk: (n_queries × chunk_docs) matrix
+                # 32GB GPU: safe up to ~200M floats per chunk
+                max_chunk = max(1, 200_000_000 // max(n_queries, 1))
+                all_topk = np.zeros((n_queries, k), dtype=np.int64)
+                best_scores = None
                 
-                for start in range(0, n_docs, chunk_size):
-                    end = min(start + chunk_size, n_docs)
-                    docs_chunk = docs_norm[start:end]  # (chunk, D)
-                    sims_chunk = queries_norm @ docs_chunk.T  # (Q, chunk)
+                for start in range(0, n_docs, max_chunk):
+                    end = min(start + max_chunk, n_docs)
+                    chunk = docs_norm[start:end]
+                    sims = queries_norm @ chunk.T  # (Q, chunk_size)
                     
-                    # For first chunk, just store top-k. For subsequent, merge.
                     if start == 0:
-                        topk_scores, topk_indices = torch.topk(sims_chunk, k=min(top_k, end), dim=1)
-                        all_topk_indices[:, :topk_indices.shape[1]] = topk_indices.cpu().numpy()
-                        best_scores = topk_scores
+                        scores, idx = torch.topk(sims, k=min(k, end), dim=1)
+                        all_topk[:, :idx.shape[1]] = idx.cpu().numpy()
+                        best_scores = scores
                     else:
-                        # Merge: concatenate with existing and re-select top-k
-                        chunk_topk_scores, chunk_topk_indices = torch.topk(sims_chunk, k=min(top_k, end-start), dim=1)
-                        # Combine
-                        combined_scores = torch.cat([best_scores, chunk_topk_scores], dim=1)
-                        combined_indices = torch.cat([
-                            torch.from_numpy(all_topk_indices).to(device),
-                            chunk_topk_indices + start
-                        ], dim=1)
-                        new_topk_scores, new_topk_indices = torch.topk(combined_scores, k=min(top_k, combined_scores.shape[1]), dim=1)
-                        all_topk_indices = new_topk_indices.cpu().numpy()
-                        best_scores = new_topk_scores
+                        c_scores, c_idx = torch.topk(sims, k=min(k, end-start), dim=1)
+                        comb_s = torch.cat([best_scores, c_scores], dim=1)
+                        comb_i = torch.cat([torch.from_numpy(all_topk).to(device), c_idx + start], dim=1)
+                        scores, idx = torch.topk(comb_s, k=k, dim=1)
+                        all_topk = idx.cpu().numpy()
+                        best_scores = scores
                     
-                    del sims_chunk
+                    del sims, chunk
+                    if start > 0: del c_scores, c_idx, comb_s, comb_i
                     torch.cuda.empty_cache()
                 
-                del docs_t, queries_t, docs_norm, queries_norm, best_scores
+                del docs_t, queries_t, docs_norm, queries_norm
+                if best_scores is not None: del best_scores
                 torch.cuda.empty_cache()
                 
-                # Compute metrics on CPU
+                # Metrics on CPU
                 all_ndcg10, all_r5, all_r10, all_r100, all_map10 = [], [], [], [], []
-
                 for i, qid in enumerate(qids):
-                    ranked = all_topk_indices[i]
+                    ranked = all_topk[i]
                     rel = qrels.get(qid, {})
                     if not rel: continue
                     rel_set = set(d for d, r in rel.items() if r > 0)
-
-                    # nDCG@10
                     dcg = sum((2**rel.get(doc_ids[ranked[j]], 0) - 1) / np.log2(j + 2) for j in range(min(10, len(ranked))))
                     ideal = sorted(rel.values(), reverse=True)[:10]
                     idcg = sum((2**ideal[j] - 1) / np.log2(j + 2) for j in range(len(ideal)))
                     all_ndcg10.append(dcg / idcg if idcg > 0 else 0.0)
-
-                    # Recall@k
-                    for k_val in [5, 10, 100]:
-                        retrieved = set(doc_ids[ranked[j]] for j in range(min(k_val, len(ranked))))
+                    for kv in [5, 10, 100]:
+                        retrieved = set(doc_ids[ranked[j]] for j in range(min(kv, len(ranked))))
                         rk = len(retrieved & rel_set) / len(rel_set) if rel_set else 0.0
-                        if k_val == 5: all_r5.append(rk)
-                        elif k_val == 10: all_r10.append(rk)
-                        elif k_val == 100: all_r100.append(rk)
-
-                    # MAP@10
+                        if kv == 5: all_r5.append(rk)
+                        elif kv == 10: all_r10.append(rk)
+                        else: all_r100.append(rk)
                     hits, ap = 0, 0.0
                     for j in range(min(10, len(ranked))):
                         if doc_ids[ranked[j]] in rel_set:
+                            hits += 1; ap += hits / (j + 1)
+                    all_map10.append(ap / min(len(rel_set), 10) if rel_set else 0.0)
+                
+                return {
+                    'ndcg@10': float(np.mean(all_ndcg10)) if all_ndcg10 else 0.0,
+                    'recall@5': float(np.mean(all_r5)) if all_r5 else 0.0,
+                    'recall@10': float(np.mean(all_r10)) if all_r10 else 0.0,
+                    'recall@100': float(np.mean(all_r100)) if all_r100 else 0.0,
+                    'map@10': float(np.mean(all_map10)) if all_map10 else 0.0,
+                }
+        except Exception as e:
+            print(f"  GPU eval failed ({e}), falling back to CPU")
                             hits += 1; ap += hits / (j + 1)
                     all_map10.append(ap / min(len(rel_set), 10) if rel_set else 0.0)
 
