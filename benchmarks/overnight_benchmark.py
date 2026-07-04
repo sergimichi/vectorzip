@@ -219,6 +219,27 @@ class CompressorCache:
         if method in ('dct+sq8', 'pca+sq8'): return comp.transform(emb).astype(float)
         return emb
 
+# Top-level function for multiprocessing
+_global_generic_emb = None
+
+def _fit_one(args):
+    method, K, seed = args
+    if method == 'pca':
+        c = PCA(n_components=K, random_state=seed); c.fit(_global_generic_emb)
+    elif method == 'dct':
+        c = VectorZip(n_components=K, method='dct'); c.fit(_global_generic_emb)
+    elif method == 'rp':
+        c = RandomProjectionCompressor(n_components=K, seed=seed); c.fit(_global_generic_emb)
+    elif method == 'dct+sq8':
+        c = VectorZip(n_components=K, method='dct+sq8'); c.fit(_global_generic_emb)
+    elif method == 'pca+sq8':
+        c = VectorZip(n_components=K, method='pca+sq8'); c.fit(_global_generic_emb)
+    elif method == 'truncation':
+        c = None
+    else:
+        c = None
+    return (f"{method}_K{K}_s{seed}_generic", c)
+
 # SpecTemp
 def spectemp_compress(calib_emb, target_emb, K):
     mean = calib_emb.mean(axis=0)
@@ -371,27 +392,12 @@ def main():
                     fit_tasks.append((method, K, seed))
         
         # Fit in parallel using multiprocessing
-        from multiprocessing import Pool
-        def _fit_one(args):
-            method, K, seed = args
-            if method == 'pca':
-                c = PCA(n_components=K, random_state=seed); c.fit(generic_emb)
-            elif method == 'dct':
-                c = VectorZip(n_components=K, method='dct'); c.fit(generic_emb)
-            elif method == 'rp':
-                c = RandomProjectionCompressor(n_components=K, seed=seed); c.fit(generic_emb)
-            elif method == 'dct+sq8':
-                c = VectorZip(n_components=K, method='dct+sq8'); c.fit(generic_emb)
-            elif method == 'pca+sq8':
-                c = VectorZip(n_components=K, method='pca+sq8'); c.fit(generic_emb)
-            elif method == 'truncation':
-                c = None
-            else:
-                c = None
-            return (f"{method}_K{K}_s{seed}_generic", c)
+        import multiprocessing as mp
+        global _global_generic_emb
+        _global_generic_emb = generic_emb
         
-        n_workers = min(len(fit_tasks), os.cpu_count() or 4)
-        with Pool(n_workers) as pool:
+        n_workers = min(len(fit_tasks), mp.cpu_count() or 4)
+        with mp.Pool(n_workers, initializer=None) as pool:
             results = pool.map(_fit_one, fit_tasks)
         for key, comp in results:
             comp_cache.cache[key] = comp
