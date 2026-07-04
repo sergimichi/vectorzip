@@ -442,14 +442,16 @@ def main():
                 
                 doc_set = set(doc_ids)
                 qrels = {qid: {d: int(round(r)) for d, r in qrels_raw[qid].items() if d in doc_set} for qid in qids}
-                # Adaptive batch size: large datasets or long texts need smaller batches
+                # Adaptive batch size: tuned for 96GB VRAM (RTX PRO 6000)
                 n_docs = len(doc_ids)
-                if n_docs > 100000:
-                    effective_batch = 16
+                if n_docs > 500000:
+                    effective_batch = 64
+                elif n_docs > 100000:
+                    effective_batch = 128
                 elif n_docs > 50000:
-                    effective_batch = 24
+                    effective_batch = 128
                 elif n_docs > 10000:
-                    effective_batch = 32
+                    effective_batch = 256
                 else:
                     effective_batch = batch_size
                 print(f"    Encoding {n_docs} docs + {len(qids)} queries (batch={effective_batch})...")
