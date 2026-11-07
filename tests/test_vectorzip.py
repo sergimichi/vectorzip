@@ -1,3 +1,8 @@
+import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import numpy as np
 from vectorzip import VectorZip, VectorZipModel
 
@@ -31,43 +36,45 @@ def test_class_api():
 def test_wrapper_api():
     print("\n--- TEST 2: VectorZipModel Wrapper (Drop-in Replacement) ---")
     
-    # 1. Load the wrapper enveloping the ultra-light all-MiniLM-L6-v2 model (originally 384 dims)
-    # We configure it to compress down to 96 dimensions (4x savings)
-    print("Loading VectorZipModel ('all-MiniLM-L6-v2' wrapped to 96 dims)...")
-    model = VectorZipModel("all-MiniLM-L6-v2", n_components=96)
+    class MockSentenceTransformer:
+        def __init__(self, dim=384):
+            self.dim = dim
+        def encode(self, sentences, **kwargs):
+            rng = np.random.default_rng(42)
+            base = rng.normal(0.0, 1.0, (len(sentences), self.dim))
+            return base
+
+    print("Loading VectorZipModel (384D wrapped to 96D)...")
+    model = VectorZipModel(MockSentenceTransformer(384), n_components=96)
     
-    # 2. Test sentences
     sentences = [
         "Spectral compression saves seventy-five percent of RAM memory.",
         "Vector databases scale incredibly well with short vectors.",
         "Quantum physics studies the behavior of elementary particles."
     ]
     
-    # 3. Fit the model to the sentences
     model.fit(sentences)
     print("✓ Model fitted successfully on corpus.")
     
-    # 4. Encode text directly. Embeddings are automatically compressed to 96 dims!
     compressed_embeddings = model.encode(sentences)
-    print(f"✓ Texts encoded successfully.")
+    print("✓ Texts encoded successfully.")
     print(f"✓ Resulting embeddings dimension: {compressed_embeddings.shape}")
+    assert compressed_embeddings.shape == (3, 96)
     
-    # 5. Get decompressed embeddings directly using the decompress=True parameter
     decompressed_embeddings = model.encode(sentences, decompress=True)
     print(f"✓ Decompressed embeddings obtained directly: {decompressed_embeddings.shape}")
+    assert decompressed_embeddings.shape == (3, 384)
     
-    # 6. Manually decompress a saved vector
     reconstructed_manually = model.decompress(compressed_embeddings)
     print(f"✓ Manual decompression successful. Dimension: {reconstructed_manually.shape}")
+    np.testing.assert_allclose(decompressed_embeddings, reconstructed_manually, rtol=1e-5, atol=1e-5)
 
-    # 7. Test Serialization
     import shutil
-    import os
     save_dir = "/tmp/vectorzip_test_model"
     model.save_pretrained(save_dir)
     print("✓ Model saved successfully.")
     
-    loaded_model = VectorZipModel.from_pretrained(save_dir)
+    loaded_model = VectorZipModel.from_pretrained(save_dir, base_model=MockSentenceTransformer(384))
     print("✓ Model loaded successfully.")
     loaded_compressed = loaded_model.encode(sentences)
     np.testing.assert_allclose(compressed_embeddings, loaded_compressed, rtol=1e-5, atol=1e-5)
@@ -82,7 +89,6 @@ def test_pca_backend():
     np.random.seed(42)
     original_embeddings = np.random.normal(0, 1.0, (200, 768))
     
-    # 1. Test class-level PCA
     vz = VectorZip(n_components=128, method="pca")
     vz.fit(original_embeddings)
     print("✓ PCA Calibration (Fit) completed.")
@@ -96,11 +102,15 @@ def test_pca_backend():
     mse = np.mean((original_embeddings - decompressed) ** 2)
     print(f"✓ PCA Reconstruction MSE: {mse:.6f}")
     
-    # 2. Test model-level PCA wrapper and serialization
+    class MockEncoder:
+        def encode(self, sentences, **kwargs):
+            rng = np.random.default_rng(123)
+            return rng.normal(0.0, 1.0, (len(sentences), 384))
+
     print("Loading PCA-backed VectorZipModel...")
-    model = VectorZipModel("all-MiniLM-L6-v2", n_components=32, method="pca")
+    model = VectorZipModel(MockEncoder(), n_components=32, method="pca")
     
-    fit_sentences = [f"This is representative sentence number {i} to calibrate our PCA backend." for i in range(100)]
+    fit_sentences = [f"Representative sentence {i} to calibrate our PCA backend." for i in range(100)]
     sentences = [
         "Principal Component Analysis is a statistically learned projection.",
         "It achieves optimal low-rank matrix approximations on local manifolds.",
@@ -112,14 +122,14 @@ def test_pca_backend():
     
     compressed_embeddings = model.encode(sentences)
     print(f"✓ PCA Encoded embeddings dimension: {compressed_embeddings.shape}")
+    assert compressed_embeddings.shape == (3, 32)
     
     import shutil
-    import os
     save_dir = "/tmp/vectorzip_test_pca_model"
     model.save_pretrained(save_dir)
     print("✓ PCA Model saved (serialized to JSON config) successfully.")
     
-    loaded_model = VectorZipModel.from_pretrained(save_dir)
+    loaded_model = VectorZipModel.from_pretrained(save_dir, base_model=MockEncoder())
     print("✓ PCA Model loaded successfully from config.")
     loaded_compressed = loaded_model.encode(sentences)
     np.testing.assert_allclose(compressed_embeddings, loaded_compressed, rtol=1e-5, atol=1e-5)
@@ -197,18 +207,18 @@ def test_unified_ecosystem():
     
     # 8. Test Matryoshka Model-level Wrapper with serialization
     print("Loading Matryoshka-backed VectorZipModel...")
-    model_mat = VectorZipModel("all-MiniLM-L6-v2", n_components=64, method="matryoshka+sq8")
+    mock_mrl_encoder = lambda texts: np.ones((len(texts), 384), dtype=np.float32) * 0.5
+    model_mat = VectorZipModel(mock_mrl_encoder, n_components=64, method="matryoshka+sq8")
     sentences = ["Matryoshka Representation Learning is supported out of the box."]
     compressed_mat = model_mat.encode(sentences)
     print(f"✓ Matryoshka Model encoded on the fly successful: {compressed_mat.shape}")
     
     import shutil
-    import os
     save_dir = "/tmp/vectorzip_test_mat_model"
     model_mat.save_pretrained(save_dir)
     print("✓ Matryoshka Model saved successfully.")
     
-    loaded_model = VectorZipModel.from_pretrained(save_dir)
+    loaded_model = VectorZipModel.from_pretrained(save_dir, base_model=mock_mrl_encoder)
     print("✓ Matryoshka Model loaded successfully.")
     loaded_compressed = loaded_model.encode(sentences)
     np.testing.assert_allclose(compressed_mat, loaded_compressed, rtol=1e-5, atol=1e-5)

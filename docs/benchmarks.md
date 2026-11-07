@@ -1,62 +1,83 @@
-# Performance & Latency Benchmarks
+# Empirical Benchmarks & Trade-Off Analysis
 
-The benchmarks below were computed using a corpus of 1,000 vectors per dimensional scale. They measure the Mean Squared Error (MSE), angular cosine similarity retention, and physical latency of the projection.
-
-| Model Size (Original) | Target Dims | Compression Ratio | MSE Error | Cosine Similarity Retention | Latency (1000 Vectors) |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| BGE-Small/MiniLM-L6 (4x Ratio) | **96** | 4.0x | `0.000301` | **99.97%** | `6.27 ms` |
-| BGE-Base/Nomic-v1.5 (4x Ratio) | **192** | 4.0x | `0.000310` | **99.97%** | `12.32 ms` |
-| BGE-Large/BGE-M3 (4x Ratio) | **256** | 4.0x | `0.001628` | **99.84%** | `8.86 ms` |
-| GTE-Qwen2/OpenAI-Small (4x Ratio) | **384** | 4.0x | `0.001392` | **99.87%** | `12.99 ms` |
-| OpenAI-Large/Cohere-v3 (4x Ratio) | **768** | 4.0x | `0.000470` | **99.95%** | `33.79 ms` |
-
-!!! note "Fidelity Invariant"
-    For all dimensional scales up to a 4.0x compression ratio, the average cosine similarity between the original and reconstructed vectors is conserved above 95%, demonstrating that VectorZip is a mathematically stable drop-in optimization for vector database systems.
+All benchmarks in this section are reproducible using the scripts in [`benchmarks/`](https://github.com/sergimichi/vectorzip/tree/main/benchmarks). Rather than claiming a single universal winner, VectorZip provides multiple compression backends so engineers can select the optimal point on the **speed, storage, and in-domain vs. out-of-distribution (OOD) fidelity** Pareto frontier.
 
 ---
 
-## Production Search Latency Benchmarks (CPU)
+## 1. Projection Throughput & Spectral Fidelity
 
-A common question in vector search optimization is: *Why not just apply SQ8 (int8 scalar quantization) directly to high-dimensional raw vectors instead of reducing dimensions?*
+Measured on 1,000 correlated synthetic vectors per dimensional scale at a **4.0x compression ratio** (`benchmarks/library/run_benchmarks.py`), evaluating reconstruction Mean Squared Error (MSE), cosine similarity retention, and transform latency:
 
-To answer this, we benchmarked real-world search latency over a database of **100,000 document vectors** on CPU performing 1,000 random query searches:
+| Original $\to$ Target Dims | Compression Ratio | Reconstruction MSE | Cosine Retention | Transform Latency (1,000 Vectors) |
+| :--- | :---: | :---: | :---: | :---: |
+| **384D $\to$ 96D** (MiniLM / BGE-Small scale) | 4.0x | `0.000301` | **99.97%** | `~6.3 ms` |
+| **768D $\to$ 192D** (BGE-Base / Nomic scale) | 4.0x | `0.000310` | **99.97%** | `~12.3 ms` |
+| **1024D $\to$ 256D** (BGE-Large / BGE-M3 scale) | 4.0x | `0.001628` | **99.84%** | `~8.9 ms` |
+| **1536D $\to$ 384D** (GTE-Qwen2 / OpenAI-Small scale) | 4.0x | `0.001392` | **99.87%** | `~13.0 ms` |
+| **3072D $\to$ 768D** (OpenAI-Large scale) | 4.0x | `0.000470` | **99.95%** | `~33.8 ms` |
 
-| Compression Scheme | Query Latency | Search Throughput | Physical Speedup |
+At $1024\text{D} \to 384\text{D}$ (`benchmarks/1_encoding_latency_penalty`), pure transform throughput exceeds **120,000 vectors/sec** on CPU (`~8.1 ms` per 1,000 vectors), adding less than `0.015 ms` per sentence to end-to-end transformer encoding.
+
+---
+
+## 2. Vector Search Latency on CPU (384D vs. 64D)
+
+Why combine dimensionality reduction with scalar quantization (`dct+sq8` or `pca+sq8`) instead of applying 8-bit quantization (`sq8`) alone?
+
+We benchmarked exact inner-product top-10 search over **100,000 normalized document vectors** and **1,000 queries** on CPU (`benchmarks/library/search_latency_test.py`):
+
+| Vector Representation | Mean Query Latency | Search Throughput | Speedup |
 | :--- | :---: | :---: | :---: |
-| **384D (SQ8 / Raw)** | `4.48 ms` | **223.0 QPS** | *1.0x (Baseline)* |
-| **64D (VectorZip / PCA)** | **`0.74 ms`** | **1,341.6 QPS** | **`6.02x speedup`** |
+| **384D Baseline** | `4.48 ms` | **223.0 QPS** | 1.00x |
+| **64D Reduced (`dct` / `pca` / `rp` / `matryoshka`)** | **`0.75 ms`** | **1,341.6 QPS** | **6.02x** |
 
-> [!IMPORTANT]
-> **Conclusion**: Dimension reduction is crucial. Bypassing dimension reduction in favor of raw quantization severely bottlenecks vector database query nodes, resulting in a **6.02x slower search throughput** due to the sheer cost of high-dimensional distance calculations.
+!!! note "Dimensionality Drives Search Speed"
+    The **6.02x speedup** is a direct result of reducing inner-product complexity from $D=384$ to $K=64$ ($384 / 64 = 6.0$) and applies equally to any dimensionality reduction backend (`dct`, `pca`, `rp`, or `matryoshka`). Pairing dimensionality reduction with `+sq8` yields both the **6.0x compute speedup** and a **24x memory reduction** ($1,536\text{ bytes} \to 64\text{ bytes}$).
 
 ---
 
-## Out-of-Distribution (OOD) Domain Generalizability
+## 3. Calibration State Footprint: `dct` vs. `pca`
 
-Traditional dimensionality reduction techniques like **PCA** fit coordinates based on the local covariance of a training dataset. However, if your production data undergoes a domain shift, PCA's performance degrades.
+When deploying calibrated compressors across edge workers or serverless functions, serialization size matters (`benchmarks/2_default_corpus_bias`):
 
-In this experiment, we trained PCA and VectorZip on a general English corpus (Wikipedia) and tested them on a highly specialized medical dataset (PubMed):
-
-| Compression Scheme | Wiki (In-Distribution) Cosine | Medical (Out-of-Distribution) Cosine | Generalization Quality Drop |
+| Metric ($1024\text{D} \to 384\text{D}$) | PCA (`pca`) | VectorZip Spectral (`dct`) | Reduction Factor |
 | :--- | :---: | :---: | :---: |
-| **PCA (64D)** | `0.8782` | `0.4925` | **38.6% drop** |
-| **VectorZip (64D)** | `0.6313` | `0.4280` | **`20.3% drop`** |
-
-> [!TIP]
-> **Takeaway**: Because VectorZip relies on a static, universal Discrete Cosine Transform (DCT) projection smoothed by Traveling Salesperson reordering rather than dataset-specific covariance matrices, it is **1.9x more robust to domain shifts** than PCA.
+| **Learned Parameters** | $1024 \times 384$ float matrix + mean | $1024$ integer permutation indices | — |
+| **Serialized Size** | `1,545.2 KB` (Pickle) | **`4.9 KB` (Pure JSON)** | **314x smaller** |
 
 ---
 
-## Downstream RAG Accuracy Transfer
+## 4. In-Distribution vs. Out-of-Distribution Trade-Offs
 
-Deploying lower-dimensional embedding representations (e.g., 384 or 512 dimensions) is crucial for resource-constrained vector database applications. However, native low-dimensional models in a given family (e.g., BGE-Small) are often severely capacity-limited, lacking the parameters required to represent multilingual structures or extended contexts.
+To evaluate how different backends behave on real neural embeddings (`sentence-transformers/all-MiniLM-L6-v2`, 384D), we calibrated compressors on a generic corpus and tested both in-distribution and across specialized out-of-distribution (OOD) domains (`benchmarks/3_tsp_scalability`, `benchmarks/7_cross_dataset_generalization`, `benchmarks/8_search_quality_preservation`, `benchmarks/9_downstream_rag_hit_rate`):
 
-| Downstream Task (RAG) | High-Capacity Model | **VectorZip (Compressed)** | Low-Capacity Native | Absolute Accuracy Gain |
-| :--- | :---: | :---: | :---: | :--- |
-| **Spanish Semantic Matching** (Qwen2.5 1536 to 512) | `100.00%` (Qwen2.5-Large 1536) | **`100.00%` (VectorZip 512)** | `33.33%` (Qwen2.5-Small 512) | **+66.67% accuracy improvement** over the native small model of equivalent dimensionality. |
-| **Spanish Multilingual Sovereignty** (BGE 1024 to 384) | `100.00%` (BGE-M3 1024) | **`100.00%` (VectorZip 384)** | `66.67%` (BGE-Small 384) | **+33.33% accuracy improvement** by preserving the multilingual capabilities of the base model. |
-| **Long-Context PDF Retrieval** (BGE 1024 to 384) | `100.00%` (BGE-M3 1024) | **`100.00%` (VectorZip 384)** | `0.00%` (BGE-Small 384) | **+100.00% accuracy improvement** due to the preservation of the base model's 8K context window. |
-| **MTEB SciFact (BEIR Suite)** (BGE 1024 to 384) | `73.46%` (BGE-Large 1024) | **`71.45%` (VectorZip 384)** | `72.00%` (BGE-Small 384) | **97.26% retrieval quality retention** compared to the uncompressed BGE-Large model. |
+### Reconstruction Cosine Similarity ($384\text{D} \to 64\text{D}$, 6x Compression)
 
-!!! success "Empirical Conclusion"
-    These experiments demonstrate that post-hoc spectral dimensionality reduction via VectorZip offers a mathematically sound alternative to training small models. It preserves advanced semantic features, such as multilinguality and extended context length, under strict dimensionality constraints.
+| Backend | Generic (In-Distribution) | Medical (OOD) | Code (OOD) | Relative ID $\to$ Medical Drop |
+| :--- | :---: | :---: | :---: | :---: |
+| **PCA (`pca`)** | **0.8782** | **0.4925** | 0.3924 | -43.9% relative (-0.3858 abs) |
+| **Spectral DCT (`dct`)** | 0.6313 | 0.4280 | **0.4269** | **-32.2% relative (-0.2033 abs)** |
+| **Random Projection (`rp`)** | 0.4049 | 0.4082 | 0.4170 | ~0.0% (data-independent) |
+
+### Retrieval Ranking Preservation ($384\text{D} \to 96\text{D}$, 4x Compression)
+
+| Backend | RAG Top-3 Hit Rate (`9_downstream_rag_hit_rate`) | Ranking nDCG@10 (`8_search_quality_preservation`) | Recall@10 |
+| :--- | :---: | :---: | :---: |
+| **Uncompressed 384D Baseline** | 98.0% | 1.000 | 1.00 |
+| **PCA (`pca`, 96D)** | **96.0%** | 0.400 | **0.31** |
+| **Spectral DCT (`dct`, 96D)** | **96.0%** | **0.445** | 0.29 |
+
+**Engineering Guidelines:**
+
+* **Use `"pca"` (or `"pca+sq8"`)** when you have a representative in-domain calibration sample and want maximum variance retention and reconstruction cosine similarity on that domain.
+* **Use `"dct"` (or `"dct+sq8"`)** when you need an ultra-compact JSON calibration state (~5 KB), higher top-rank nDCG@10 preservation, or resilience against severe domain shifts (such as uncalibrated source code or cross-lingual corpora).
+* **Use `"matryoshka"`** when your embedding backbone was explicitly trained with Matryoshka Representation Learning (MRL).
+
+---
+
+## 5. High-Capacity Compression vs. Native Small Models
+
+Compressing a large, capable model (`BAAI/bge-m3`, 1024D, 567M parameters, 8K token window, 100+ languages) to 384D allows you to fit within the exact vector database footprint of a small native model (`BAAI/bge-small-en-v1.5`, 384D, 33M parameters, 512 token window) while retaining capabilities that small models lack (`benchmarks/library/`):
+
+* **Long-Context Retrieval (`long_context_benchmark.py`)**: On ~1,150-word documents where the target fact appears past the 512-token mark (middle or end of document), native `BGE-Small` (384D) fails due to context truncation, whereas `BGE-M3` compressed to 384D via VectorZip retrieves the correct document across all positions.
+* **Multilingual Disambiguation (`spanish_benchmark.py`, `qwen_spanish_benchmark.py`)**: On Spanish polysemy disambiguation (e.g., *banco* as financial institution vs. bench vs. shoal of fish; *gato* as hydraulic jack vs. feline), compressing `BGE-M3` ($1024\text{D} \to 384\text{D}$) or `GTE-Qwen2-1.5B` ($1536\text{D} \to 512\text{D}$) preserves 100% top-1 disambiguation accuracy where smaller native models misclassify homonyms.

@@ -42,7 +42,7 @@ class RandomProjectionCompressor:
 
 class ProductQuantizer:
     """
-    Product Quantization (PQ) compressor using subvector k-means.
+    Product Quantization (PQ) compressor using subvector k-means (`scipy.cluster.vq.kmeans2`).
     """
     def __init__(self, n_subvectors=8, n_clusters=256, seed=42):
         self.n_subvectors = n_subvectors
@@ -51,18 +51,21 @@ class ProductQuantizer:
         self.centroids_ = None
         
     def fit(self, X):
-        from sklearn.cluster import KMeans
+        from scipy.cluster.vq import kmeans2
         X = np.asarray(X, dtype=float)
         M, N = X.shape
         d = N // self.n_subvectors
         self.centroids_ = []
-        n_clus = min(self.n_clusters, M)
-        n_clus = max(1, n_clus)
+        n_clus = max(1, min(self.n_clusters, M))
+        rng = np.random.default_rng(self.seed)
         for i in range(self.n_subvectors):
             sub_X = X[:, i*d : (i+1)*d]
-            kmeans = KMeans(n_clusters=n_clus, random_state=self.seed, n_init=1, max_iter=20)
-            kmeans.fit(sub_X)
-            self.centroids_.append(kmeans.cluster_centers_)
+            if np.allclose(sub_X, sub_X[0]):
+                centroids = np.tile(sub_X[0], (n_clus, 1))
+            else:
+                init_idx = rng.choice(M, size=n_clus, replace=False)
+                centroids, _ = kmeans2(sub_X, sub_X[init_idx], iter=20, minit="matrix", missing="warn")
+            self.centroids_.append(centroids)
         return self
         
     def transform(self, X):
@@ -86,12 +89,54 @@ class ProductQuantizer:
         if is_1d:
             codes = codes[np.newaxis, :]
         M, m = codes.shape
-        d = self.centroids_0_shape = self.centroids_[0].shape[1]
+        d = self.centroids_[0].shape[1]
         N = m * d
         X_rec = np.zeros((M, N))
         for i in range(m):
             cents = self.centroids_[i]
             X_rec[:, i*d : (i+1)*d] = cents[codes[:, i]]
+        return X_rec[0] if is_1d else X_rec
+
+
+class PCACompressor:
+    """
+    Principal Component Analysis (PCA) compressor using SVD (`numpy.linalg.svd`).
+    """
+    def __init__(self, n_components=384):
+        self.n_components = n_components
+        self.components_ = None
+        self.mean_ = None
+        self.explained_variance_ = None
+
+    def fit(self, X):
+        X = np.asarray(X, dtype=float)
+        M, N = X.shape
+        self.mean_ = np.mean(X, axis=0)
+        X_centered = X - self.mean_
+        _, S, Vt = np.linalg.svd(X_centered, full_matrices=False)
+        if Vt.shape[0] < self.n_components:
+            pad_rows = self.n_components - Vt.shape[0]
+            Vt = np.vstack([Vt, np.zeros((pad_rows, N))])
+            S = np.concatenate([S, np.zeros(pad_rows)])
+        self.components_ = Vt[:self.n_components]
+        denom = max(M - 1, 1)
+        self.explained_variance_ = (S[:self.n_components] ** 2) / denom
+        return self
+
+    def transform(self, X):
+        X = np.asarray(X, dtype=float)
+        is_1d = X.ndim == 1
+        if is_1d:
+            X = X[np.newaxis, :]
+        C = np.dot(X - self.mean_, self.components_.T)
+        return C[0] if is_1d else C
+
+    def inverse_transform(self, C):
+        C = np.asarray(C, dtype=float)
+        is_1d = C.ndim == 1
+        if is_1d:
+            C = C[np.newaxis, :]
+        X_rec = np.dot(C, self.components_) + self.mean_
         return X_rec[0] if is_1d else X_rec
 
 
@@ -230,8 +275,7 @@ class VectorZip:
         elif self.reduction_method == "pca":
             if self.n_components > N:
                 raise ValueError(f"Target n_components ({self.n_components}) cannot exceed dimension {N}.")
-            from sklearn.decomposition import PCA
-            self.pca_ = PCA(n_components=self.n_components)
+            self.pca_ = PCACompressor(n_components=self.n_components)
             self.pca_.fit(X)
         elif self.reduction_method == "rp":
             if self.n_components > N:
@@ -386,7 +430,9 @@ class VectorZip:
             current = nearest
 
         path = self._two_opt(path, dist_matrix)
-        path = self._or_opt(path, dist_matrix)
+        if n := len(path):
+            if n <= 1024:
+                path = self._or_opt(path, dist_matrix)
         return np.array(path)
 
     def _two_opt(self, path, dist_matrix):
@@ -416,57 +462,63 @@ class VectorZip:
         return best_path.tolist()
 
     def _or_opt(self, path, dist_matrix):
-        """Or-opt: relocate segments of length 1-3 to better positions."""
+        """Or-opt: relocate segments of length 1-3 to better positions (vectorized)."""
         n = len(path)
+        if n <= 4:
+            return path
         best_path = np.array(path)
         improved = True
-        max_iters = 20
+        max_iters = 10
         iters = 0
         while improved and iters < max_iters:
             improved = False
             for seg_len in [1, 2, 3]:
+                m = n - seg_len
+                if m <= 1:
+                    continue
                 for i in range(n - seg_len + 1):
-                    segment = best_path[i:i + seg_len]
-                    rest = np.concatenate([best_path[:i], best_path[i + seg_len:]])
-                    # Cost of removing segment from position i
-                    if i > 0 and i < n - seg_len:
-                        remove_gain = dist_matrix[best_path[i - 1], best_path[i]] + dist_matrix[best_path[i + seg_len - 1], best_path[i + seg_len]] - dist_matrix[best_path[i - 1], best_path[i + seg_len]]
-                    elif i == 0 and n - seg_len > 0:
-                        remove_gain = dist_matrix[best_path[seg_len - 1], best_path[seg_len]]
-                    elif i == n - seg_len and n - seg_len > 0:
-                        remove_gain = dist_matrix[best_path[i - 1], best_path[i]]
+                    seg_start = best_path[i]
+                    seg_end = best_path[i + seg_len - 1]
+                    if 0 < i < m:
+                        remove_gain = (
+                            dist_matrix[best_path[i - 1], seg_start]
+                            + dist_matrix[seg_end, best_path[i + seg_len]]
+                            - dist_matrix[best_path[i - 1], best_path[i + seg_len]]
+                        )
+                    elif i == 0:
+                        remove_gain = dist_matrix[seg_end, best_path[seg_len]]
+                    elif i == m:
+                        remove_gain = dist_matrix[best_path[i - 1], seg_start]
                     else:
                         continue
 
-                    # Try inserting segment at each position in rest
-                    best_insert_gain = 0.0
-                    best_insert_pos = -1
-                    for j in range(len(rest)):
-                        if j == 0:
-                            insert_cost = dist_matrix[segment[-1], rest[0]] if len(rest) > 1 else 0
-                            base_cost = 0
-                        elif j == len(rest):
-                            insert_cost = dist_matrix[rest[-1], segment[0]] if len(rest) > 0 else 0
-                            base_cost = 0
-                        else:
-                            insert_cost = dist_matrix[rest[j - 1], segment[0]] + dist_matrix[segment[-1], rest[j]] - dist_matrix[rest[j - 1], rest[j]]
-                            base_cost = dist_matrix[rest[j - 1], rest[j]]
+                    rest = np.concatenate([best_path[:i], best_path[i + seg_len:]])
+                    # Vectorize insertion cost across interior positions j = 1 .. m-1
+                    prev_nodes = rest[:-1]
+                    next_nodes = rest[1:]
+                    interior_costs = (
+                        dist_matrix[prev_nodes, seg_start]
+                        + dist_matrix[seg_end, next_nodes]
+                        - dist_matrix[prev_nodes, next_nodes]
+                    )
+                    gains = remove_gain - interior_costs
+                    best_interior = int(np.argmax(gains))
+                    best_gain = gains[best_interior]
+                    best_pos = best_interior + 1
 
-                        gain = remove_gain - insert_cost
-                        if gain > best_insert_gain + 1e-12:
-                            best_insert_gain = gain
-                            best_insert_pos = j
+                    # Check boundary j = 0
+                    gain_0 = remove_gain - dist_matrix[seg_end, rest[0]]
+                    if gain_0 > best_gain:
+                        best_gain = gain_0
+                        best_pos = 0
 
-                    if best_insert_pos >= 0:
-                        new_path = np.concatenate([
-                            rest[:best_insert_pos],
-                            segment,
-                            rest[best_insert_pos:]
+                    if best_gain > 1e-12:
+                        best_path = np.concatenate([
+                            rest[:best_pos],
+                            best_path[i:i + seg_len],
+                            rest[best_pos:],
                         ])
-                        best_path = new_path
                         improved = True
-                        break
-                    if improved:
                         break
                 if improved:
                     break
@@ -486,13 +538,15 @@ class VectorZipModel:
     highly compressed embeddings.
     """
     def __init__(self, model_name_or_path, n_components=384, method="dct", **kwargs):
+        self.n_components = n_components
+        self.method = method.lower()
+        self.compressor = VectorZip(n_components=self.n_components, method=self.method)
+        self.compressor_fitted_ = False
         if isinstance(model_name_or_path, str):
             from sentence_transformers import SentenceTransformer
             self.model = SentenceTransformer(model_name_or_path, **kwargs)
         else:
             self.model = model_name_or_path
-        self.n_components = n_components
-        self.method = method.lower()
         self.compressor = None
 
     def _get_embeddings(self, sentences, **kwargs):
@@ -620,9 +674,10 @@ class VectorZipModel:
             json.dump(config, f)
 
     @classmethod
-    def from_pretrained(cls, model_name_or_path, **kwargs):
+    def from_pretrained(cls, model_name_or_path, base_model=None, **kwargs):
         """
         Loads a pre-trained VectorZipModel from disk.
+        If `base_model` is provided, wraps that model or callable instead of loading a SentenceTransformer from disk.
         """
         config_path = os.path.join(model_name_or_path, "vectorzip_config.json")
         if os.path.exists(config_path):
@@ -630,9 +685,7 @@ class VectorZipModel:
                 config = json.load(f)
             n_components = config.get("n_components", 384)
             method = config.get("method", "dct")
-            model = cls(model_name_or_path, n_components=n_components, method=method, **kwargs)
-            
-            model.compressor = VectorZip(
+            compressor = VectorZip(
                 n_components=n_components, 
                 method=method,
                 tsp_optimize=config.get("tsp_optimize", True),
@@ -642,6 +695,9 @@ class VectorZipModel:
                 dct_taper=config.get("dct_taper", "smooth"),
                 dct_coeff_select=config.get("dct_coeff_select", "auto")
             )
+            target_model = base_model if base_model is not None else model_name_or_path
+            model = cls(target_model, n_components=n_components, method=method, **kwargs)
+            model.compressor = compressor
             
             # Restore state based on config fields
             if "original_dim_" in config:
@@ -658,15 +714,10 @@ class VectorZipModel:
                 model.compressor.dct_taper_weights_ = np.array(config["dct_taper_weights_"])
                 
             if "pca_components_" in config:
-                from sklearn.decomposition import PCA
-                pca = PCA(n_components=n_components)
+                pca = PCACompressor(n_components=n_components)
                 pca.components_ = np.array(config["pca_components_"])
                 pca.mean_ = np.array(config["pca_mean_"])
                 pca.explained_variance_ = np.array(config["pca_explained_variance_"])
-                pca.n_components_ = n_components
-                pca.n_features_in_ = pca.components_.shape[1]
-                pca.singular_values_ = np.ones(n_components)
-                pca.noise_variance_ = 0.0
                 model.compressor.pca_ = pca
                 
             if "rp_matrix_" in config:

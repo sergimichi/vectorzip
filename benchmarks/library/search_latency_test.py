@@ -85,8 +85,9 @@ def benchmark_search_latency():
         "speedup": speedup
     }
     
-    import json
-    with open("search_latency_results.json", "w") as f:
+    import json, os
+    results_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results", "search_latency_results.json")
+    with open(results_path, "w") as f:
         json.dump(results, f, indent=4)
 
 if __name__ == "__main__":

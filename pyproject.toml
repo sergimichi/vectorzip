@@ -1,18 +1,40 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectorzip"
 version = "0.1.0"
-description = "High-performance RAG vector compression"
+description = "Post-hoc embedding compression and dimensionality reduction for RAG and vector search"
 readme = "README.md"
+license = {text = "Apache-2.0"}
 authors = [{name = "sergimichi", email = "sergimichi@users.noreply.github.com"}]
+requires-python = ">=3.8"
 dependencies = [
     "numpy",
-    "scipy"
+    "scipy",
 ]
-requires-python = ">=3.8"
+keywords = ["embeddings", "rag", "vector-search", "compression", "quantization", "dct", "pca", "matryoshka"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+full = [
+    "scikit-learn",
+    "sentence-transformers",
+]
+dev = [
+    "pytest",
+    "scikit-learn",
+    "sentence-transformers",
+    "datasets",
+]
 
 [project.urls]
 Homepage = "https://github.com/sergimichi/vectorzip"

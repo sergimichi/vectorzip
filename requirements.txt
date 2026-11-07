@@ -1,7 +1,5 @@
 numpy
 scipy
 scikit-learn
-sentence_transformers
-beir
+sentence-transformers
 datasets
-torch

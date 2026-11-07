@@ -9,7 +9,7 @@ from sklearn.cluster import KMeans
 from datasets import load_dataset
 
 # Add parent directory to path to import vectorzip
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from vectorzip import VectorZip
 
 class RandomProjectionCompressor:
@@ -303,7 +303,7 @@ def main():
         }
     }
     
-    output_file = os.path.join(os.path.dirname(__file__), "baseline_comparison_results.json")
+    output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results", "baseline_comparison_results.json")
     with open(output_file, "w") as f:
         json.dump(baseline_results, f, indent=4)
         

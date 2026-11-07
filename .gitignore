@@ -1,24 +1,33 @@
-# Python envs and builds
+# Python environments and build artifacts
 venv/
+.venv/
 dist/
 build/
 *.egg-info/
 __pycache__/
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 
-# IDE and OS
+# IDE and OS files
 .DS_Store
 .idea/
 .vscode/
 
-# Local data and experiments
+# Local scratch and cache directories
 archive/
 plan/
 scratch/
+experiments/
 .antigravitycli/
 .gemini/
 *.npy
+*.npz
+*.pkl
+beir_cache/
+beir_datasets/
+miracl_datasets/
 
 # Compiled documentation site
 site/

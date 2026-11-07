@@ -40,7 +40,6 @@ def main():
     
     # Serialize PCA
     pca_pickle = pickle.dumps(pca)
-    pca_np_save = io_bytes = pickle.dumps(pca.components_)
     
     # Serialize VectorZip
     # VectorZip indices can be saved as standard JSON (list of ints)

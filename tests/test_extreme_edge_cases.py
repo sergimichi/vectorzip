@@ -1,9 +1,13 @@
 import numpy as np
 import os
+import sys
 import unittest
 import warnings
 import threading
 import shutil
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from vectorzip import VectorZip, VectorZipModel
 
 class TestVectorZipExtremeEdgeCases(unittest.TestCase):
